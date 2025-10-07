@@ -25,6 +25,7 @@ import java.nio.ByteBuffer
 
 class MainActivity : AppCompatActivity() {
 
+    private val buffer: ByteBuffer = TODO()
     private lateinit var textureView: TextureView
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
@@ -97,7 +98,8 @@ class MainActivity : AppCompatActivity() {
         imageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2)
         imageReader.setOnImageAvailableListener({ reader ->
             reader.acquireLatestImage()?.use { img ->
-                // nativeProcessFrame(buffer, img.width, img.height)  // will be used in Step 4
+
+                nativeProcessFrame(buffer, img.width, img.height)  // will be used in Step 4
             }
         }, bgHandler)
 
@@ -172,7 +174,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        init { System.loadLibrary("native-lib") } // to be linked in Step 4
+
+        init {
+            System.loadLibrary("opencv_java4")
+            System.loadLibrary("native-lib") } // to be linked in Step 4
     }
 
     @Suppress("unused")
