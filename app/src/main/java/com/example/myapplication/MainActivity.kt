@@ -1,10 +1,18 @@
 package com.example.myapplication
 
 import android.Manifest
-import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.ImageFormat
 import android.graphics.SurfaceTexture
-import android.hardware.camera2.*
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.SessionConfiguration
+import android.media.ImageReader
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
@@ -13,6 +21,7 @@ import android.view.TextureView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import java.nio.ByteBuffer
 
 class MainActivity : AppCompatActivity() {
 
@@ -21,8 +30,9 @@ class MainActivity : AppCompatActivity() {
     private var captureSession: CameraCaptureSession? = null
     private var bgThread: HandlerThread? = null
     private var bgHandler: Handler? = null
+    private lateinit var imageReader: ImageReader
 
-    private val camManager by lazy { getSystemService(Context.CAMERA_SERVICE) as CameraManager }
+    private val camManager by lazy { getSystemService(CAMERA_SERVICE) as CameraManager }
 
     private val requestCameraPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -55,34 +65,87 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openCamera() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestCameraPermission.launch(Manifest.permission.CAMERA)
+            return
+        }
+
         startBgThread()
         if (!textureView.isAvailable) return
-        camManager.openCamera(backCameraId(), object : CameraDevice.StateCallback() {
-            override fun onOpened(device: CameraDevice) { cameraDevice = device; startPreview() }
-            override fun onDisconnected(device: CameraDevice) { device.close(); cameraDevice = null }
-            override fun onError(device: CameraDevice, error: Int) { device.close(); cameraDevice = null }
-        }, bgHandler)
+
+        try {
+            camManager.openCamera(backCameraId(), object : CameraDevice.StateCallback() {
+                override fun onOpened(device: CameraDevice) { cameraDevice = device; startPreview() }
+                override fun onDisconnected(device: CameraDevice) { device.close(); cameraDevice = null }
+                override fun onError(device: CameraDevice, error: Int) { device.close(); cameraDevice = null }
+            }, bgHandler)
+        } catch (e: SecurityException) {
+            e.printStackTrace()
+        }
     }
 
     private fun startPreview() {
         val tex = textureView.surfaceTexture ?: return
-        tex.setDefaultBufferSize(1280, 720)
-        val surface = Surface(tex)
+        val width = 1280
+        val height = 720
+        tex.setDefaultBufferSize(width, height)
+
+        val previewSurface = Surface(tex)
+
+        imageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2)
+        imageReader.setOnImageAvailableListener({ reader ->
+            reader.acquireLatestImage()?.use { img ->
+                @Suppress("UNUSED_VARIABLE")
+                val buffer: ByteBuffer = img.planes[0].buffer
+                // nativeProcessFrame(buffer, img.width, img.height)  // will be used in Step 4
+            }
+        }, bgHandler)
 
         val device = cameraDevice ?: return
         val req = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-            addTarget(surface)
+            addTarget(previewSurface)
+            addTarget(imageReader.surface)
             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
         }
 
-        device.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
-            override fun onConfigured(session: CameraCaptureSession) {
-                captureSession = session
-                session.setRepeatingRequest(req.build(), null, bgHandler)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            // Non-deprecated path (API 28+)
+            val outputs = listOf(
+                OutputConfiguration(previewSurface),
+                OutputConfiguration(imageReader.surface)
+            )
+            val callback = object : CameraCaptureSession.StateCallback() {
+                override fun onConfigured(session: CameraCaptureSession) {
+                    captureSession = session
+                    session.setRepeatingRequest(req.build(), null, bgHandler)
+                }
+                override fun onConfigureFailed(session: CameraCaptureSession) {}
             }
-            override fun onConfigureFailed(session: CameraCaptureSession) {}
-        }, bgHandler)
+            val sessionConfig = SessionConfiguration(
+                SessionConfiguration.SESSION_REGULAR,
+                outputs,
+                ContextCompat.getMainExecutor(this),
+                callback
+            )
+            device.createCaptureSession(sessionConfig)
+        } else {
+            // Fallback for API < 28
+            @Suppress("DEPRECATION")
+            device.createCaptureSession(
+                listOf(previewSurface, imageReader.surface),
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: CameraCaptureSession) {
+                        captureSession = session
+                        session.setRepeatingRequest(req.build(), null, bgHandler)
+                    }
+                    override fun onConfigureFailed(session: CameraCaptureSession) {}
+                },
+                bgHandler
+            )
+        }
     }
 
     private fun startBgThread() {
@@ -109,4 +172,11 @@ class MainActivity : AppCompatActivity() {
         stopBgThread()
         super.onPause()
     }
+
+    companion object {
+        init { System.loadLibrary("native-lib") } // to be linked in Step 4
+    }
+
+    @Suppress("unused")
+    private external fun nativeProcessFrame(buffer: ByteBuffer, width: Int, height: Int)
 }
