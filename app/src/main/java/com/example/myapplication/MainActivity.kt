@@ -97,8 +97,6 @@ class MainActivity : AppCompatActivity() {
         imageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2)
         imageReader.setOnImageAvailableListener({ reader ->
             reader.acquireLatestImage()?.use { img ->
-                @Suppress("UNUSED_VARIABLE")
-                val buffer: ByteBuffer = img.planes[0].buffer
                 // nativeProcessFrame(buffer, img.width, img.height)  // will be used in Step 4
             }
         }, bgHandler)
