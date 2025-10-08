@@ -3,11 +3,7 @@ package com.example.myapplication
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.ImageFormat
-import android.hardware.camera2.CameraCaptureSession
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraDevice
-import android.hardware.camera2.CameraManager
-import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.*
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.media.ImageReader
@@ -16,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Range
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -57,7 +54,7 @@ class MainActivity : AppCompatActivity() {
         renderer = EdgeRenderer()
         glView.setEGLContextClientVersion(2)
         glView.setRenderer(renderer)
-        glView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+        glView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
 
         ensurePermissionAndOpen()
     }
@@ -92,7 +89,8 @@ class MainActivity : AppCompatActivity() {
 
         outRgba = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder())
 
-        imageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2)
+        // 🔹 Use deeper ImageReader queue to avoid dropped frames
+        imageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 3)
         imageReader.setOnImageAvailableListener({ reader ->
             reader.acquireLatestImage()?.use { img ->
                 val y = img.planes[0]
@@ -105,16 +103,29 @@ class MainActivity : AppCompatActivity() {
                     img.height
                 )
                 renderer.updateFrame(outRgba, img.width, img.height)
+                glView.requestRender()
             }
         }, bgHandler)
 
         val device = cameraDevice ?: return
+
+        // 🔹 Build capture request with stable FPS & reduced latency
         val req = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(imageReader.surface)
+
+            val chars = camManager.getCameraCharacteristics(backCameraId())
+            val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            val preferred = ranges?.filter { it.lower >= 24 }?.maxByOrNull { it.upper }
+                ?: Range(30, 30)
+            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, preferred)
+
+            set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
+            set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
         }
 
+        // 🔹 Create capture session
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val outputs = listOf(OutputConfiguration(imageReader.surface))
             val callback = object : CameraCaptureSession.StateCallback() {
@@ -180,7 +191,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // JNI with strides (matches native-lib.cpp)
     private external fun nativeProcessFrame(
         yPlane: ByteBuffer,
         yRowStride: Int,

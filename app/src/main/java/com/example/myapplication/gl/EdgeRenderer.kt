@@ -2,6 +2,7 @@ package com.example.myapplication.gl
 
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
+import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -19,8 +20,14 @@ class EdgeRenderer : GLSurfaceView.Renderer {
 
     private var frameW = 0
     private var frameH = 0
-    private var frame: ByteBuffer? = null
+    private var texAllocatedW = 0
+    private var texAllocatedH = 0
+    private var frameRef: ByteBuffer? = null
     private val dirty = AtomicBoolean(false)
+
+    // 🔹 Diagnostics
+    private var frameCounter = 0
+    private var lastFpsTime = System.nanoTime()
 
     private val quad: FloatBuffer = ByteBuffer.allocateDirect(4 * 4 * 4)
         .order(ByteOrder.nativeOrder())
@@ -34,15 +41,10 @@ class EdgeRenderer : GLSurfaceView.Renderer {
             position(0)
         }
 
+    /** Receive a direct RGBA buffer owned by the caller (zero-copy). */
     fun updateFrame(src: ByteBuffer, w: Int, h: Int) {
-        if (frame == null || frameW != w || frameH != h) {
-            frameW = w; frameH = h
-            frame = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
-        }
-        val dst = frame!!
-        dst.clear()
-        dst.put(src.duplicate().apply { clear() })
-        dst.position(0)
+        frameW = w; frameH = h
+        frameRef = src
         dirty.set(true)
     }
 
@@ -58,7 +60,7 @@ class EdgeRenderer : GLSurfaceView.Renderer {
         """.trimIndent()
 
         val fs = """
-            precision mediump float;
+            precision medium float;
             varying vec2 vUv;
             uniform sampler2D uTex;
             void main() {
@@ -66,9 +68,17 @@ class EdgeRenderer : GLSurfaceView.Renderer {
             }
         """.trimIndent()
 
-        fun compile(type: Int, src: String) = GLES20.glCreateShader(type).also {
-            GLES20.glShaderSource(it, src)
-            GLES20.glCompileShader(it)
+        fun compile(type: Int, src: String): Int {
+            val shader = GLES20.glCreateShader(type)
+            GLES20.glShaderSource(shader, src)
+            GLES20.glCompileShader(shader)
+            val status = IntArray(1)
+            GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
+            if (status[0] == 0) {
+                Log.e("EdgeRenderer", "Shader compile error: " + GLES20.glGetShaderInfoLog(shader))
+                GLES20.glDeleteShader(shader)
+            }
+            return shader
         }
 
         val v = compile(GLES20.GL_VERTEX_SHADER, vs)
@@ -101,15 +111,25 @@ class EdgeRenderer : GLSurfaceView.Renderer {
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
-        if (dirty.getAndSet(false) && frame != null && frameW > 0 && frameH > 0) {
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texId)
-            val buf = frame!!
-            buf.position(0)
-            GLES20.glTexImage2D(
-                GLES20.GL_TEXTURE_2D, 0,
-                GLES20.GL_RGBA, frameW, frameH, 0,
-                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf
-            )
+        if (dirty.getAndSet(false)) {
+            val buf = frameRef
+            if (buf != null && frameW > 0 && frameH > 0) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texId)
+                buf.position(0)
+                if (texAllocatedW != frameW || texAllocatedH != frameH) {
+                    GLES20.glTexImage2D(
+                        GLES20.GL_TEXTURE_2D, 0,
+                        GLES20.GL_RGBA, frameW, frameH, 0,
+                        GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf
+                    )
+                    texAllocatedW = frameW; texAllocatedH = frameH
+                } else {
+                    GLES20.glTexSubImage2D(
+                        GLES20.GL_TEXTURE_2D, 0, 0, 0,
+                        frameW, frameH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf
+                    )
+                }
+            }
         }
 
         GLES20.glUseProgram(program)
@@ -124,5 +144,14 @@ class EdgeRenderer : GLSurfaceView.Renderer {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texId)
         GLES20.glUniform1i(uTexLoc, 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+        // 🔹 Simple FPS counter (prints every ~1 s)
+        frameCounter++
+        val now = System.nanoTime()
+        if (now - lastFpsTime > 1_000_000_000L) {
+            Log.i("EdgeRenderer", "FPS: $frameCounter")
+            frameCounter = 0
+            lastFpsTime = now
+        }
     }
 }
