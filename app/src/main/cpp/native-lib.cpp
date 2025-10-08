@@ -8,23 +8,35 @@
 extern "C"
 JNIEXPORT void JNICALL
 Java_com_example_myapplication_MainActivity_nativeProcessFrame(
-        JNIEnv* env, jobject /*thiz*/, jobject buffer, jint width, jint height) {
+        JNIEnv* env, jobject /*this*/,
+        jobject yPlane, jint yRowStride, jint yPixelStride,
+        jobject outRgba, jint width, jint height) {
 
-    // Plane-0 from YUV_420_888 = full-res luma; treat as grayscale
-    auto* y_ptr = static_cast<unsigned char*>(env->GetDirectBufferAddress(buffer));
-    if (!y_ptr) { LOGI("Null Y plane"); return; }
+    auto* y_ptr   = static_cast<unsigned char*>(env->GetDirectBufferAddress(yPlane));
+    auto* out_ptr = static_cast<unsigned char*>(env->GetDirectBufferAddress(outRgba));
+    if (!y_ptr || !out_ptr) { LOGI("null buffer(s)"); return; }
 
-    cv::Mat y(height, width, CV_8UC1, y_ptr);        // grayscale source
+    // Build a view over Y with the actual row stride (no copy).
+    // Most devices have yPixelStride == 1; if not, compact first.
+    cv::Mat yStrided(height, width, CV_8UC1, y_ptr, static_cast<size_t>(yRowStride));
+    cv::Mat y; // compact WxH
+    if (yPixelStride == 1) {
+        y = yStrided;                    // header only, no copy
+    } else {
+        // Rare, but handle gracefully: gather every pixelStride byte.
+        y.create(height, width, CV_8UC1);
+        for (int r = 0; r < height; ++r) {
+            const unsigned char* srcRow = y_ptr + r * yRowStride;
+            auto* dstRow = y.ptr<unsigned char>(r);
+            for (int c = 0; c < width; ++c) dstRow[c] = srcRow[c * yPixelStride];
+        }
+    }
+
+    // Edge detection -> write directly into outRgba buffer
     cv::Mat edges;
-    // Optionally blur to reduce noise
     cv::GaussianBlur(y, edges, cv::Size(3,3), 0);
     cv::Canny(edges, edges, 80, 160);
 
-    // (Demo) count non-zero edge pixels
-    int edgeCount = cv::countNonZero(edges);
-    LOGI("Processed frame %dx%d, edges=%d", width, height, edgeCount);
-
-    // If you later need RGBA for GL upload:
-    // cv::Mat rgba; cv::cvtColor(y, rgba, cv::COLOR_GRAY2RGBA);
-    // ... copy to a direct buffer to render on the Java side.
+    cv::Mat rgba(height, width, CV_8UC4, out_ptr);  // wraps output buffer
+    cv::cvtColor(edges, rgba, cv::COLOR_GRAY2RGBA); // fills out_ptr in-place
 }

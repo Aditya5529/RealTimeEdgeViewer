@@ -3,7 +3,6 @@ package com.example.myapplication
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.ImageFormat
-import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
@@ -12,32 +11,36 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.media.ImageReader
+import android.opengl.GLSurfaceView
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
-import android.view.Surface
-import android.view.TextureView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.example.myapplication.gl.EdgeRenderer
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 class MainActivity : AppCompatActivity() {
 
-    private val buffer: ByteBuffer = TODO()
-    private lateinit var textureView: TextureView
+    private lateinit var glView: GLSurfaceView
+    private lateinit var renderer: EdgeRenderer
+
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var bgThread: HandlerThread? = null
     private var bgHandler: Handler? = null
     private lateinit var imageReader: ImageReader
 
+    private lateinit var outRgba: ByteBuffer
+
     private val camManager by lazy { getSystemService(CAMERA_SERVICE) as CameraManager }
 
     private val requestCameraPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted && textureView.isAvailable) openCamera()
+            if (granted) openCamera()
         }
 
     private fun backCameraId(): String =
@@ -48,15 +51,15 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-        textureView = findViewById(R.id.textureView)
+        setContentView(R.layout.edge_view)
 
-        textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-            override fun onSurfaceTextureAvailable(s: SurfaceTexture, w: Int, h: Int) = ensurePermissionAndOpen()
-            override fun onSurfaceTextureSizeChanged(s: SurfaceTexture, w: Int, h: Int) {}
-            override fun onSurfaceTextureUpdated(s: SurfaceTexture) {}
-            override fun onSurfaceTextureDestroyed(s: SurfaceTexture) = true
-        }
+        glView = findViewById(R.id.glView)
+        renderer = EdgeRenderer()
+        glView.setEGLContextClientVersion(2)
+        glView.setRenderer(renderer)
+        glView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+
+        ensurePermissionAndOpen()
     }
 
     private fun ensurePermissionAndOpen() {
@@ -68,55 +71,52 @@ class MainActivity : AppCompatActivity() {
     private fun openCamera() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestCameraPermission.launch(Manifest.permission.CAMERA)
-            return
-        }
+        ) return
 
         startBgThread()
-        if (!textureView.isAvailable) return
 
-        try {
-            camManager.openCamera(backCameraId(), object : CameraDevice.StateCallback() {
+        camManager.openCamera(
+            backCameraId(),
+            object : CameraDevice.StateCallback() {
                 override fun onOpened(device: CameraDevice) { cameraDevice = device; startPreview() }
                 override fun onDisconnected(device: CameraDevice) { device.close(); cameraDevice = null }
                 override fun onError(device: CameraDevice, error: Int) { device.close(); cameraDevice = null }
-            }, bgHandler)
-        } catch (e: SecurityException) {
-            e.printStackTrace()
-        }
+            },
+            bgHandler
+        )
     }
 
     private fun startPreview() {
-        val tex = textureView.surfaceTexture ?: return
         val width = 1280
         val height = 720
-        tex.setDefaultBufferSize(width, height)
 
-        val previewSurface = Surface(tex)
+        outRgba = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder())
 
         imageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2)
         imageReader.setOnImageAvailableListener({ reader ->
             reader.acquireLatestImage()?.use { img ->
-
-                nativeProcessFrame(buffer, img.width, img.height)  // will be used in Step 4
+                val y = img.planes[0]
+                nativeProcessFrame(
+                    y.buffer,
+                    y.rowStride,
+                    y.pixelStride,
+                    outRgba,
+                    img.width,
+                    img.height
+                )
+                renderer.updateFrame(outRgba, img.width, img.height)
             }
         }, bgHandler)
 
         val device = cameraDevice ?: return
         val req = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-            addTarget(previewSurface)
             addTarget(imageReader.surface)
             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            // Non-deprecated path (API 28+)
-            val outputs = listOf(
-                OutputConfiguration(previewSurface),
-                OutputConfiguration(imageReader.surface)
-            )
+            val outputs = listOf(OutputConfiguration(imageReader.surface))
             val callback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     captureSession = session
@@ -132,10 +132,9 @@ class MainActivity : AppCompatActivity() {
             )
             device.createCaptureSession(sessionConfig)
         } else {
-            // Fallback for API < 28
             @Suppress("DEPRECATION")
             device.createCaptureSession(
-                listOf(previewSurface, imageReader.surface),
+                listOf(imageReader.surface),
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         captureSession = session
@@ -163,10 +162,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (textureView.isAvailable) ensurePermissionAndOpen()
+        glView.onResume()
     }
 
     override fun onPause() {
+        glView.onPause()
         captureSession?.close(); captureSession = null
         cameraDevice?.close(); cameraDevice = null
         stopBgThread()
@@ -174,12 +174,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-
         init {
             System.loadLibrary("opencv_java4")
-            System.loadLibrary("native-lib") } // to be linked in Step 4
+            System.loadLibrary("native-lib")
+        }
     }
 
-    @Suppress("unused")
-    private external fun nativeProcessFrame(buffer: ByteBuffer, width: Int, height: Int)
+    // JNI with strides (matches native-lib.cpp)
+    private external fun nativeProcessFrame(
+        yPlane: ByteBuffer,
+        yRowStride: Int,
+        yPixelStride: Int,
+        outRgba: ByteBuffer,
+        width: Int,
+        height: Int
+    )
 }
