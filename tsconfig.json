@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2018",
+    "module": "ES2015",
+    "moduleResolution": "node",
+    "strict": true,
+    "outDir": "./web/dist",
+    "rootDir": "./web/src",
+    "skipLibCheck": true
+  },
+  "include": ["web/src/**/*"]
+}

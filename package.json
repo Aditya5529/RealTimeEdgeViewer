@@ -1,0 +1,12 @@
+{
+  "name": "realtime-edge-web",
+  "private": true,
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "http-server": "^14.1.1"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "http-server web -p 5173 -c-1"
+  }
+}
