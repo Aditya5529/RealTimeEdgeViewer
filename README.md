@@ -118,8 +118,18 @@ Blank screen	Ensure EdgeRenderer is rendering with valid GL context
 Web build fails	Run npm install && npm run build
 JNI crash	Check buffer size (RGBA = width × height × 4 bytes)
 
-Screenshots
-Android Output	Web Viewer
+Working Screenshots
+
+Android App (Real-Time Edge Detection)
+This is a sample output from the Android version of **RealTimeEdgeViewer**, showing live edge detection using OpenCV.
+
+![Android Edge Detection Screenshot](screenshots/screenshot_androidapp.png)
+
+
+Web App (Edge Visualization in Browser)
+Below is the web version rendering edges from a static image using WebAssembly,TypeScript.
+
+![Web Edge Detection Screenshot](screenshots/screenshot_web.png)
 
 Deployment
 To tag and push the release:
