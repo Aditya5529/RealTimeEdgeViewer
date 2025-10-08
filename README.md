@@ -48,8 +48,6 @@ Android
 app/src/main/jniLibs/arm64-v8a/
 app/src/main/jniLibs/armeabi-v7a/
 
-yaml
-Copy code
 4. Build & Run on a **physical Android device**.  
 5. Grant camera permission when prompted.
 
